@@ -1,0 +1,627 @@
+`timescale 1ns/1ps
+
+module riscv_nn_ultra_core_D6
+(
+    input  wire        clk,
+    input  wire        rst_n,
+
+    input  wire [31:0] sensor_data_in,
+
+    output wire [31:0] decision_out
+);
+
+//////////////////////////////
+// IF STAGE
+//////////////////////////////
+
+wire [31:0] pc_if;
+wire [31:0] instr_if;
+
+if_stage IF_STAGE(
+    .clk(clk),
+    .rst_n(rst_n),
+    .pc(pc_if),
+    .instr(instr_if)
+);
+
+
+//////////////////////////////
+// ID STAGE
+//////////////////////////////
+
+wire [31:0] rs1_id;
+wire [31:0] rs2_id;
+wire [31:0] imm_id;
+
+wire [4:0]  rd_id;
+
+wire npu_en_id;
+wire clr_acc_id;
+wire swap_buf_id;
+
+wire [31:0] wb_data_wb;
+wire wb_we_wb;
+wire [4:0] rd_wb;
+
+id_stage_ultra ID_STAGE(
+
+    .clk(clk),
+    .rst_n(rst_n),
+
+    .instr(instr_if),
+
+    .wb_data(wb_data_wb),
+    .wb_we(wb_we_wb),
+    .rd_wb(rd_wb),
+
+    .rs1_data(rs1_id),
+    .rs2_data(rs2_id),
+    .imm(imm_id),
+
+    .rd_out(rd_id),
+
+    .npu_en(npu_en_id),
+    .clr_acc(clr_acc_id),
+    .swap_buf(swap_buf_id)
+);
+
+
+//////////////////////////////
+// EX STAGE (CPU ALU ONLY)
+//////////////////////////////
+
+wire [31:0] alu_out_ex;
+wire [4:0]  rd_ex;
+
+ex_stage_ultra EX_STAGE(
+
+    .clk(clk),
+    .rst_n(rst_n),
+
+    .rs1(rs1_id),
+    .rs2(rs2_id),
+    .imm(imm_id),
+
+    .rd_in(rd_id),
+
+    .alu_out(alu_out_ex),
+    .rd_out(rd_ex)
+);
+
+
+//////////////////////////////
+// NPU COMMAND QUEUE
+//////////////////////////////
+
+wire [31:0] npu_cmd_rs1;
+wire [31:0] npu_cmd_imm;
+
+wire        npu_cmd_valid;
+wire        npu_cmd_ready;
+
+npu_cmd_queue CMD_QUEUE(
+
+    .clk(clk),
+    .rst_n(rst_n),
+
+    .push(npu_en_id),
+
+    .rs1_in(rs1_id),
+    .imm_in(imm_id),
+
+    .pop(npu_cmd_ready),
+
+    .rs1_out(npu_cmd_rs1),
+    .imm_out(npu_cmd_imm),
+
+    .valid(npu_cmd_valid)
+);
+
+
+//////////////////////////////
+// WEIGHT BUFFER SYSTEM
+//////////////////////////////
+
+wire [127:0] npu_weights;
+
+weight_buffer_system WEIGHT_BUFFER(
+
+    .clk(clk),
+    .rst_n(rst_n),
+
+    .write_en(npu_en_id),
+    .write_bank(instr_if[13:12]),
+
+    .cpu_data_in(rs1_id),
+
+    .swap_buffers(swap_buf_id),
+
+    .npu_weight_bus(npu_weights)
+);
+
+
+//////////////////////////////
+// DECOUPLED NPU ENGINE
+//////////////////////////////
+
+wire [31:0] npu_result;
+wire        npu_done;
+
+npu_engine NPU_ENGINE(
+
+    .clk(clk),
+    .rst_n(rst_n),
+
+    .cmd_valid(npu_cmd_valid),
+    .cmd_ready(npu_cmd_ready),
+
+    .rs1(npu_cmd_rs1),
+    .imm(npu_cmd_imm),
+
+    .weights(npu_weights),
+
+    .result(npu_result),
+    .done(npu_done)
+);
+
+
+//////////////////////////////
+// MEM STAGE
+//////////////////////////////
+
+wire [31:0] mem_out_mem;
+wire [31:0] alu_out_mem;
+wire [31:0] nlp_out_mem;
+
+wire [4:0] rd_mem;
+
+mem_stage_ultra MEM_STAGE(
+
+    .clk(clk),
+    .rst_n(rst_n),
+
+    .alu_in(alu_out_ex),
+
+    .nlp_in(npu_result),
+
+    .raw_sensor(sensor_data_in),
+
+    .rd_in(rd_ex),
+
+    .mem_data_out(mem_out_mem),
+    .alu_out(alu_out_mem),
+    .nlp_out(nlp_out_mem),
+
+    .rd_out(rd_mem)
+);
+
+
+//////////////////////////////
+// WB STAGE
+//////////////////////////////
+
+wb_stage_ultra WB_STAGE(
+
+    .clk(clk),
+    .rst_n(rst_n),
+
+    .alu_in(alu_out_mem),
+    .mem_in(mem_out_mem),
+    .nlp_in(nlp_out_mem),
+
+    .rd_in(rd_mem),
+
+    .wb_data(wb_data_wb),
+    .wb_we(wb_we_wb),
+
+    .rd_out(rd_wb)
+);
+
+
+//////////////////////////////
+// FINAL OUTPUT
+//////////////////////////////
+
+assign decision_out = nlp_out_mem;
+
+endmodule
+
+//===========================================================
+//===========================================================
+module if_stage (
+    input  wire        clk,
+    input  wire        rst_n,
+    output reg [31:0]  pc,
+    output reg [31:0]  instr
+);
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pc    <= 32'd0;
+            instr <= 32'd0;
+        end else begin
+            pc    <= pc + 32'd4;     // sequential fetch
+            instr <= pc;             // dummy instruction fetch
+        end
+    end
+endmodule
+
+
+//===========================================================
+module id_stage_ultra (
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire [31:0] instr,
+    input  wire [31:0] wb_data,
+    input  wire        wb_we,
+    input  wire [4:0]  rd_wb,
+
+    output reg  [31:0] rs1_data,
+    output reg  [31:0] rs2_data,
+    output reg  [31:0] imm,
+    output reg  [4:0]  rd_out,
+    output reg         npu_en,
+    output reg         clr_acc,
+    output reg         swap_buf
+);
+
+    reg [31:0] instr_r;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            instr_r  <= 32'd0;
+            rs1_data <= 32'd0;
+            rs2_data <= 32'd0;
+            imm      <= 32'd0;
+            rd_out   <= 5'd0;
+            npu_en   <= 1'b0;
+            clr_acc  <= 1'b0;
+            swap_buf <= 1'b0;
+        end else begin
+            instr_r  <= instr;
+
+            // very simple decode (placeholder)
+            rs1_data <= instr_r;
+            rs2_data <= instr_r;
+            imm      <= instr_r;
+            rd_out   <= instr_r[11:7];
+
+            npu_en   <= instr_r[6];
+            clr_acc  <= instr_r[5];
+            swap_buf <= instr_r[4];
+        end
+    end
+endmodule
+
+
+//===========================================================
+module mem_stage_ultra (
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire [31:0] alu_in,
+    input  wire [31:0] nlp_in,
+    input  wire [31:0] raw_sensor,
+    input  wire [4:0]  rd_in,
+
+    output reg  [31:0] mem_data_out,
+    output reg  [31:0] alu_out,
+    output reg  [31:0] nlp_out,
+    output reg  [4:0]  rd_out
+);
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            mem_data_out <= 32'd0;
+            alu_out      <= 32'd0;
+            nlp_out      <= 32'd0;
+            rd_out       <= 5'd0;
+        end else begin
+            mem_data_out <= raw_sensor; // sensor capture
+            alu_out      <= alu_in;
+            nlp_out      <= nlp_in;
+            rd_out       <= rd_in;
+        end
+    end
+endmodule
+
+
+//===========================================================
+module wb_stage_ultra (
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire [31:0] alu_in,
+    input  wire [31:0] mem_in,
+    input  wire [31:0] nlp_in,
+    input  wire [4:0]  rd_in,
+
+    output reg  [31:0] wb_data,
+    output reg         wb_we,
+    output reg  [4:0]  rd_out
+);
+
+    reg [31:0] regfile [0:31];
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            wb_data <= 32'd0;
+            wb_we   <= 1'b0;
+            rd_out  <= 5'd0;
+        end else begin
+            wb_data <= nlp_in;  // choose neural result
+            wb_we   <= (rd_in != 0);
+            rd_out  <= rd_in;
+
+            if (wb_we)
+                regfile[rd_in] <= wb_data;
+        end
+    end
+endmodule
+
+
+
+// ============================================================
+// COMPUTE ENGINE: 128-bit Banked NPU with Zero-Skipping
+// ============================================================
+
+
+module ex_stage_ultra
+(
+    input  wire        clk,
+    input  wire        rst_n,
+
+    input  wire [31:0] rs1,
+    input  wire [31:0] rs2,
+    input  wire [31:0] imm,
+
+    input  wire [4:0]  rd_in,
+
+    output reg  [31:0] alu_out,
+    output reg  [4:0]  rd_out
+);
+
+always @(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+    begin
+        alu_out <= 32'd0;
+        rd_out  <= 5'd0;
+    end
+    else
+    begin
+        // Simple ALU operation
+        alu_out <= rs1 + imm;
+
+        // pipeline register
+        rd_out <= rd_in;
+    end
+end
+
+endmodule
+
+// ============================================================
+// PING-PONG MEMORY SYSTEM
+// ============================================================
+module weight_buffer_system (
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire        write_en,
+    input  wire [1:0]  write_bank,
+    input  wire [31:0] cpu_data_in,
+    input  wire        swap_buffers,
+    output wire [127:0] npu_weight_bus
+);
+
+    reg [127:0] buffer_ping, buffer_pong;
+    reg select; // 0: NPU uses Ping, 1: NPU uses Pong
+
+    // -------------------------------------------------
+    // Buffer selection (ping-pong switching)
+    // -------------------------------------------------
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            select <= 1'b0;
+        else if (swap_buffers)
+            select <= ~select;
+    end
+
+    // -------------------------------------------------
+    // Buffer initialization + write logic
+    // -------------------------------------------------
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            // ✅ Initialize with known values (NO X)
+            buffer_ping <= 128'h0001_0002_0003_0004;
+            buffer_pong <= 128'h0005_0006_0007_0008;
+        end 
+        else if (write_en) begin
+            if (select) begin
+                // NPU using Pong → CPU writes Ping
+                case(write_bank)
+                    2'b00: buffer_ping[31:0]   <= cpu_data_in;
+                    2'b01: buffer_ping[63:32]  <= cpu_data_in;
+                    2'b10: buffer_ping[95:64]  <= cpu_data_in;
+                    2'b11: buffer_ping[127:96] <= cpu_data_in;
+                    default: ; // do nothing
+                endcase
+            end 
+            else begin
+                // NPU using Ping → CPU writes Pong
+                case(write_bank)
+                    2'b00: buffer_pong[31:0]   <= cpu_data_in;
+                    2'b01: buffer_pong[63:32]  <= cpu_data_in;
+                    2'b10: buffer_pong[95:64]  <= cpu_data_in;
+                    2'b11: buffer_pong[127:96] <= cpu_data_in;
+                    default: ; // do nothing
+                endcase
+            end
+        end
+    end
+
+    // -------------------------------------------------
+    // Output selection (to NPU)
+    // -------------------------------------------------
+    assign npu_weight_bus = (select == 1'b0) ? buffer_ping : buffer_pong;
+
+endmodule
+
+// ============================================================
+// SUPPORTING MODULES (MAC Bank with Zero Skipping)
+// ============================================================
+module mac_bank_32bit (
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire        en,
+    input  wire [31:0] weights,
+    input  wire [31:0] inputs,
+    output reg  [31:0] partial_sum
+);
+
+    reg signed [15:0] m0, m1, m2, m3;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            m0 <= 0; m1 <= 0; m2 <= 0; m3 <= 0;
+        end else if (en) begin
+            m0 <= (inputs[7:0]   == 0) ? 0 : $signed(weights[7:0])   * $signed(inputs[7:0]);
+            m1 <= (inputs[15:8]  == 0) ? 0 : $signed(weights[15:8])  * $signed(inputs[15:8]);
+            m2 <= (inputs[23:16] == 0) ? 0 : $signed(weights[23:16]) * $signed(inputs[23:16]);
+            m3 <= (inputs[31:24] == 0) ? 0 : $signed(weights[31:24]) * $signed(inputs[31:24]);
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            partial_sum <= 32'd0;
+        else if (en)
+            partial_sum <= m0 + m1 + m2 + m3;
+    end
+endmodule
+
+
+//=====================================================================
+// npu_cmd
+//====================================================================
+module npu_cmd_queue
+(
+    input wire clk,
+    input wire rst_n,
+
+    input wire push,
+    input wire [31:0] rs1_in,
+    input wire [31:0] imm_in,
+
+    input wire pop,
+
+    output reg [31:0] rs1_out,
+    output reg [31:0] imm_out,
+    output reg valid
+);
+
+reg [31:0] fifo_rs1 [0:3];
+reg [31:0] fifo_imm [0:3];
+
+reg [1:0] head;
+reg [1:0] tail;
+reg [2:0] count;
+
+always @(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+    begin
+        head <= 0;
+        tail <= 0;
+        count <= 0;
+        valid <= 0;
+    end
+    else
+    begin
+        if(push && count < 4)
+        begin
+            fifo_rs1[tail] <= rs1_in;
+            fifo_imm[tail] <= imm_in;
+            tail <= tail + 1;
+            count <= count + 1;
+        end
+
+        if(pop && count > 0)
+        begin
+            rs1_out <= fifo_rs1[head];
+            imm_out <= fifo_imm[head];
+            head <= head + 1;
+            count <= count - 1;
+        end
+
+        valid <= (count != 0);
+    end
+end
+
+endmodule
+
+//=============================================================
+// NPU engine
+//=============================================================
+
+module npu_engine
+(
+    input wire clk,
+    input wire rst_n,
+
+    input wire cmd_valid,
+    output wire cmd_ready,
+
+    input wire [31:0] rs1,
+    input wire [31:0] imm,
+
+    input wire [127:0] weights,
+
+    output wire [31:0] result,
+    output reg done
+);
+
+assign cmd_ready = 1'b1;
+
+wire [127:0] broadcast_input = {4{rs1}};
+
+wire [31:0] bank_sum [0:3];
+
+genvar i;
+
+generate
+for(i=0;i<4;i=i+1)
+begin: MAC_BANKS
+
+    mac_bank_32bit MAC_BANK (
+        .clk(clk),
+        .rst_n(rst_n),
+        .en(cmd_valid),
+        .weights(weights[i*32 +: 32]),
+        .inputs(broadcast_input[i*32 +: 32]),
+        .partial_sum(bank_sum[i])
+    );
+
+end
+endgenerate
+
+
+reg [31:0] acc;
+
+always @(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+        acc <= 0;
+    else if(cmd_valid)
+        acc <= acc + bank_sum[0] + bank_sum[1] + bank_sum[2] + bank_sum[3];
+end
+
+assign result = acc[31] ? 32'd0 : acc;
+
+always @(posedge clk or negedge rst_n)
+begin
+    if(!rst_n)
+        done <= 0;
+    else
+        done <= cmd_valid;
+end
+
+endmodule
+

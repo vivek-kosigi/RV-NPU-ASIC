@@ -1,0 +1,128 @@
+`timescale 1ns/1ps
+
+// ============================================================
+// UNIVERSAL TESTBENCH FOR ALL 6 DESIGNS
+// Pure Verilog-2001
+// ============================================================
+module tb_riscv_nn_ultra_core;
+
+    // ----------------------------
+    // Clock & Reset
+    // ----------------------------
+    reg clk;
+    reg rst_n;
+
+    // ----------------------------
+    // DUT I/O
+    // ----------------------------
+    reg  [31:0] sensor_data_in;
+    wire [31:0] decision_out;
+
+    // ----------------------------
+    // Cycle Counter
+    // ----------------------------
+    integer cycle_count;
+
+    // ----------------------------
+    // Sensor File Handling
+    // ----------------------------
+    integer sensor_fd;
+    integer sensor_status;
+
+    // ----------------------------
+    // Instantiate DUT
+    // (same instance for ALL designs)
+    // ----------------------------
+    riscv_nn_ultra_core_D6 DUT (
+        .clk(clk),
+        .rst_n(rst_n),
+        .sensor_data_in(sensor_data_in),
+        .decision_out(decision_out)
+    );
+
+    // ----------------------------
+    // Clock generation (100 MHz)
+    // ----------------------------
+    initial begin
+        clk = 1'b0;
+        forever #5 clk = ~clk;   // 10 ns period
+    end
+
+    // ----------------------------
+    // Reset sequence
+    // ----------------------------
+    initial begin
+        rst_n = 1'b0;
+        #50;
+        rst_n = 1'b1;
+        $display("\n[TB] Reset deasserted at time %0t", $time);
+    end
+
+    // ----------------------------
+    // Cycle counter
+    // ----------------------------
+    always @(posedge clk) begin
+        if (!rst_n)
+            cycle_count <= 0;
+        else
+            cycle_count <= cycle_count + 1;
+    end
+
+    // ----------------------------
+    // Sensor stimulus
+    // Same for ALL designs
+    // ----------------------------
+    initial begin
+        sensor_data_in = 32'd0;
+
+        sensor_fd = $fopen("sensor.txt", "r");
+        if (sensor_fd == 0) begin
+            $display("[TB][ERROR] Cannot open sensor.txt");
+            $finish;
+        end
+
+        // Wait for reset release
+        @(posedge rst_n);
+        $display("[TB] Sensor feeding started");
+
+        while (!$feof(sensor_fd)) begin
+            sensor_status = $fscanf(sensor_fd, "%d\n", sensor_data_in);
+            @(posedge clk);
+        end
+
+        $fclose(sensor_fd);
+        $display("[TB] Sensor feeding completed");
+    end
+
+    // ----------------------------
+    // Simulation control
+    // ----------------------------
+    initial begin
+        $display("===============================================");
+        $display(" UNIVERSAL TB STARTED ");
+        $display(" Same TB / Same Program / Same Sensor ");
+        $display(" Only hardware architecture differs ");
+        $display("===============================================");
+
+        // Run fixed number of cycles
+        #100000;
+
+        $display("\n===============================================");
+        $display(" SIMULATION COMPLETED ");
+        $display(" Total Cycles        : %0d", cycle_count);
+        $display(" Final decision_out  : %0d (0x%08h)", decision_out, decision_out);
+        $display(" Simulation Time     : %0t ns", $time);
+        $display("===============================================\n");
+
+        $finish;
+    end
+
+    // ----------------------------
+    // Optional waveform dump
+    // ----------------------------
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(0, tb_riscv_nn_ultra_core);
+    end
+
+endmodule
