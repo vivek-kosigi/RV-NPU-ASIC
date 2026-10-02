@@ -1,0 +1,21 @@
+read_libs /home/install/FOUNDRY/digital/90nm/dig/lib/slow.lib   # technology library file
+read_hdl rv_npu_D6.v						# design RTL file
+elaborate							# to convert RTL into schematic 
+
+read_sdc rv.sdc							# add constraints to design
+
+set_db syn_generic_effort medium				# to maintain hierarchy 
+set_db syn_map_effort medium
+set_db syn_opt_effort medium
+
+syn_generic							# schematic without technology file
+syn_map								# schematic with technology file
+syn_opt								# optimize schematic's area , logic cells etc
+
+report_area							# area of design 
+report_timing							# timing of design
+report_power							# power of design
+report_qor							# quality of result 
+
+write_hdl > rv_npu_netlist.v					# netlist generated for PnR 
+write_sdc > rv_npu_netlist.sdc					# SDC generated for PnR 
