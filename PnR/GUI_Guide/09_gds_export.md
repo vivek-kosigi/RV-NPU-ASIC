@@ -61,3 +61,11 @@ An example output filename could be:
 
 ```text
 rv_npu.gds
+```
+
+## 5. Verify the Export
+After the export completes, confirm that:
+- The GDSII file was generated successfully.
+- The expected top-level design was exported.
+- No critical stream-out errors were reported.
+- The final layout corresponds to the completed routed design.
