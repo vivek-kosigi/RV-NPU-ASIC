@@ -12,8 +12,8 @@ The ablation study evaluates how successive architectural features affect the ph
 | D1 | RISC-V with neural instruction support |
 | D2 | Addition of SWAR SIMD processing |
 | D3 | Addition of persistent accumulation |
-| D5 | Integrated RV-NPU design with command-queue logic |
-| D6 | Decoupled CPU–NPU execution architecture |
+| D4 | Integrated RV-NPU design with command-queue logic |
+| D5 | Decoupled CPU–NPU execution architecture |
 
 Each variant represents a different architectural configuration, allowing the impact of additional functionality and execution architecture to be evaluated.
 
